@@ -37,10 +37,18 @@ type PreFetcher struct {
 }
 
 type Payload struct {
-	blockNumber int64
-	data        any
+	BlockNumber int64
+	Data        any
 }
 
+// New creates a new PreFetcher instance.
+//
+//	endpoint: the endpoint of the ethereum node
+//	fetchFunc: the function to fetch some Data you want
+//	processed: the block number already processed
+//	lag: the blocks set to lag behind the chain head to avoid fork
+//	size: the buffer size
+//	fetchConcurrency: the number of concurrent fetchers
 func New(endpoint string, fetchFunc FetchFunc, processed, lag, size int64, fetchConcurrency int) *PreFetcher {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	b := &PreFetcher{
@@ -100,7 +108,7 @@ func (p *PreFetcher) updateChainHead() {
 		return
 	}
 	if p.chainHead != int64(number) {
-		slog.Debug("[PreFetcher.updateChainHead] chain head updated", "block blockNumber", number)
+		slog.Debug("[PreFetcher.updateChainHead] chain head updated", "block BlockNumber", number)
 	}
 	p.chainHead = int64(number)
 }
@@ -129,18 +137,18 @@ func (p *PreFetcher) mapWriteLoop() {
 			record := slog.NewRecord(time.Now(), slog.LevelInfo, "[PreFetcher] status", 0)
 			record.Add("chain head", p.chainHead, "scheduled", p.scheduled, "buff length", len(p.m))
 			if len(p.m) > 0 {
-				record.Add("lowest blockNumber", low)
+				record.Add("lowest BlockNumber", low)
 			}
 			slog.Default().Handler().Handle(context.Background(), record)
 		case payload := <-p.chPayload:
 			p.mLock.Lock()
-			p.m[payload.blockNumber] = payload
+			p.m[payload.BlockNumber] = payload
 			p.mLock.Unlock()
 		}
 	}
 }
 
-// Get returns the block data of the given blockNumber. Not thread safe.
+// Get returns the block Data of the given BlockNumber. Not thread safe.
 func (p *PreFetcher) Get(height int64) *Payload {
 	p.processed = height - 1
 
@@ -155,7 +163,7 @@ func (p *PreFetcher) Get(height int64) *Payload {
 		return data
 	}
 
-	slog.Info("[PreFetcher.Get] data not exist", "blockNumber", height)
+	slog.Info("[PreFetcher.Get] Data not exist", "BlockNumber", height)
 	return nil
 }
 
@@ -169,14 +177,18 @@ func (p *PreFetcher) dataFetcher(fetcherIndex int) {
 
 	var doFetch = func(i int64) {
 		data, err := p.fetch(i)
-		if err != nil {
-			p.chPayload <- &Payload{
-				blockNumber: i,
-				data:        data,
+		if err == nil {
+			select {
+			case <-p.ctx.Done():
+			case p.chPayload <- &Payload{BlockNumber: i, Data: data}:
 			}
 		} else {
-			slog.Error(fmt.Sprintf("[PreFetcher %d] failed to fetch block", fetcherIndex), "blockNumber", i, "error", err)
-			p.chFetchRetry <- i
+			slog.Error(fmt.Sprintf("[PreFetcher %d] failed to fetch block", fetcherIndex), "BlockNumber", i, "error", err)
+			select {
+			case <-p.ctx.Done():
+			case p.chFetchRetry <- i:
+			}
+
 		}
 	}
 
@@ -186,7 +198,7 @@ func (p *PreFetcher) dataFetcher(fetcherIndex int) {
 		case <-p.ctx.Done():
 			return
 		case i := <-p.chFetchRetry:
-			slog.Info(fmt.Sprintf("[PreFetcher %d] retry", fetcherIndex), "blockNumber", i)
+			slog.Info(fmt.Sprintf("[PreFetcher %d] retry", fetcherIndex), "BlockNumber", i)
 			doFetch(i)
 			continue
 		default:
@@ -209,11 +221,16 @@ func (p *PreFetcher) feedTask() {
 		p.wg.Done()
 	}()
 	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		default:
+		}
 		next := p.scheduled + 1
 		// wait for chain head
 		if p.chainHead-next < p.lag {
 			d := 2 * time.Second
-			slog.Debug("[PreFetcher] wait for chain head", "chain head", p.chainHead, "blockNumber", next, "wait duration", d)
+			slog.Debug("[PreFetcher] wait for chain head", "chain head", p.chainHead, "BlockNumber", next, "wait duration", d)
 			time.Sleep(d)
 			continue
 		}
