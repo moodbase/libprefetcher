@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"sync"
 	"time"
 
@@ -127,18 +126,11 @@ func (p *PreFetcher) mapWriteLoop() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			var low int64 = math.MaxInt64
-			for i, _ := range p.m {
-				if i < low {
-					low = i
-				}
-			}
 			p.updateChainHead()
 			record := slog.NewRecord(time.Now(), slog.LevelInfo, "[PreFetcher] status", 0)
+			p.mLock.RLock()
 			record.Add("chain head", p.chainHead, "scheduled", p.scheduled, "buff length", len(p.m))
-			if len(p.m) > 0 {
-				record.Add("lowest BlockNumber", low)
-			}
+			p.mLock.RUnlock()
 			slog.Default().Handler().Handle(context.Background(), record)
 		case payload := <-p.chPayload:
 			p.mLock.Lock()
